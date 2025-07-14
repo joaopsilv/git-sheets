@@ -1,0 +1,250 @@
+name: Sync Issues to Google Sheets
+on:
+  issues:
+    types: [opened, edited, closed, reopened, assigned, unassigned, labeled, unlabeled]
+    
+jobs:
+  sync-to-sheets:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          pip install google-api-python-client google-auth requests
+      
+      - name: Get Board Custom Fields
+        id: get-board-fields
+        run: |
+          python3 << 'EOF'
+          import requests
+          import json
+          import os
+          
+          def get_board_fields(issue_node_id):
+              github_token = os.environ.get('GITHUB_TOKEN')
+              if not github_token:
+                  print("GITHUB_TOKEN não configurado, pulando busca de custom fields")
+                  return {"Status": "", "Substatus": ""}
+              
+              query = """
+              query GetIssueProjectFields($nodeId: ID!) {
+                  node(id: $nodeId) {
+                      ... on Issue {
+                          projectItems(first: 100) {
+                              nodes {
+                                  id
+                                  fieldValues(first: 100) {
+                                      nodes {
+                                          ...SelectedStatus
+                                          ...Substatus
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+              
+              fragment SelectedStatus on ProjectV2ItemFieldSingleSelectValue {
+                  name
+                  field {
+                      ... on ProjectV2SingleSelectField {
+                          name
+                      }
+                  }
+              }
+              
+              fragment Substatus on ProjectV2ItemFieldTextValue {
+                  text
+                  field {
+                      ... on ProjectV2Field {
+                          name
+                      }
+                  }
+              }
+              """
+              
+              try:
+                  response = requests.post(
+                      "https://api.github.com/graphql",
+                      json={
+                          "query": query,
+                          "variables": {"nodeId": issue_node_id}
+                      },
+                      headers={
+                          "Authorization": f"Bearer {github_token}",
+                          "Content-Type": "application/json"
+                      }
+                  )
+                  
+                  data = response.json()
+                  
+                  if data.get('errors'):
+                      print("Erro na query GraphQL:", data['errors'])
+                      return {"Status": "", "Substatus": ""}
+                  
+                  project_items = data.get('data', {}).get('node', {}).get('projectItems', {}).get('nodes', [])
+                  status = ""
+                  substatus = ""
+                  
+                  for item in project_items:
+                      for field_value in item.get('fieldValues', {}).get('nodes', []):
+                          field_name = field_value.get('field', {}).get('name', '')
+                          if field_name == "Status":
+                              status = field_value.get('name', '') or field_value.get('text', '')
+                          elif field_name == "Substatus":
+                              substatus = field_value.get('name', '') or field_value.get('text', '')
+                  
+                  return {"Status": status, "Substatus": substatus}
+                  
+              except Exception as error:
+                  print("Erro ao buscar dados do board:", error)
+                  return {"Status": "", "Substatus": ""}
+          
+          # Processar dados da issue
+          issue_data = json.loads('''${{ toJson(github.event.issue) }}''')
+          
+          project_data = get_board_fields(issue_data['node_id'])
+          
+          from datetime import datetime
+          
+          def format_date(date_str):
+              dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
+              return dt.strftime('%d/%m/%Y')
+          
+          row_data = {
+              "Título": issue_data['title'],
+              "Estado": issue_data['state'],
+              "URL": issue_data['html_url'],
+              "Data Criação": format_date(issue_data['created_at']),
+              "Data Atualização": format_date(issue_data['updated_at']),
+              "Assignee": issue_data['assignee']['login'] if issue_data.get('assignee') else "",
+              "Descrição": issue_data.get('body', ''),
+              "Labels": ', '.join([label['name'] for label in issue_data.get('labels', [])]),
+              "Status": project_data['Status'],
+              "Substatus": project_data['Substatus']
+          }
+          
+          # Salvar dados processados
+          with open('issue_data.json', 'w', encoding='utf-8') as f:
+              json.dump(row_data, f, ensure_ascii=False, indent=2)
+          EOF
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+      
+      - name: Update Google Sheets
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          
+          def add_to_sheet(data):
+              try:
+                  credentials_json = os.environ['GOOGLE_SERVICE_ACCOUNT_CREDENTIALS']
+                  credentials_info = json.loads(credentials_json)
+                  
+                  credentials = service_account.Credentials.from_service_account_info(
+                      credentials_info,
+                      scopes=['https://www.googleapis.com/auth/spreadsheets']
+                  )
+                  
+                  service = build('sheets', 'v4', credentials=credentials)
+                  spreadsheet_id = os.environ['GOOGLE_SPREADSHEET_ID']
+                  
+                  # Buscar dados existentes na planilha
+                  sheet_range = 'Issues!A:Z'
+                  
+                  try:
+                      result = service.spreadsheets().values().get(
+                          spreadsheetId=spreadsheet_id,
+                          range=sheet_range
+                      ).execute()
+                      
+                      existing_data = result.get('values', [])
+                      
+                      if not existing_data:
+                          # Se não há dados, adicionar cabeçalho
+                          headers = list(data.keys())
+                          values = [headers, list(data.values())]
+                          
+                          service.spreadsheets().values().update(
+                              spreadsheetId=spreadsheet_id,
+                              range='Issues!A1:Z2',
+                              valueInputOption='RAW',
+                              body={'values': values}
+                          ).execute()
+                          
+                          print("Planilha criada e linha adicionada:", data)
+                          return
+                      
+                      # Buscar linha existente pela URL
+                      headers = existing_data[0] if existing_data else []
+                      url_column_index = None
+                      
+                      try:
+                          url_column_index = headers.index('URL')
+                      except ValueError:
+                          print("Coluna URL não encontrada")
+                          return
+                      
+                      existing_row_index = None
+                      for i, row in enumerate(existing_data[1:], start=2):  # Pular cabeçalho
+                          if len(row) > url_column_index and row[url_column_index] == data['URL']:
+                              existing_row_index = i
+                              break
+                      
+                      new_row = []
+                      for header in headers:
+                          new_row.append(data.get(header, ''))
+                      
+                      if existing_row_index:
+                          range_name = f'Issues!A{existing_row_index}:Z{existing_row_index}'
+                          service.spreadsheets().values().update(
+                              spreadsheetId=spreadsheet_id,
+                              range=range_name,
+                              valueInputOption='RAW',
+                              body={'values': [new_row]}
+                          ).execute()
+                          print("Linha atualizada:", data)
+                      else:
+                          next_row = len(existing_data) + 1
+                          range_name = f'Issues!A{next_row}:Z{next_row}'
+                          service.spreadsheets().values().update(
+                              spreadsheetId=spreadsheet_id,
+                              range=range_name,
+                              valueInputOption='RAW',
+                              body={'values': [new_row]}
+                          ).execute()
+                          print("Linha adicionada:", data)
+                      
+                  except Exception as e:
+                      print("Erro ao processar planilha:", e)
+                      raise
+                      
+              except Exception as error:
+                  print("Erro ao adicionar linha:", error)
+                  raise
+          
+          # Carregar dados processados
+          with open('issue_data.json', 'r', encoding='utf-8') as f:
+              row_data = json.load(f)
+          
+          add_to_sheet(row_data)
+          
+          EOF
+        env:
+          GOOGLE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS }}
+          GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
+      
+      - name: Log Success
+        run: |
+          echo "Issue sincronizada com sucesso!"
