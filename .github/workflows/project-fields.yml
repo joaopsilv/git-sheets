@@ -1,0 +1,292 @@
+name: Sync Project Fields to Google Sheets
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:  # Permite execução manual
+
+jobs:
+  sync-project-fields:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install dependencies
+        run: |
+          pip install google-api-python-client google-auth requests
+      
+      - name: Sync Project Fields to Sheets
+        run: |
+          python3 << 'EOF'
+          import requests
+          import json
+          import os
+          from google.oauth2 import service_account
+          from googleapiclient.discovery import build
+          from datetime import datetime
+          
+          def get_all_repository_issues():
+              github_token = os.environ.get('GITHUB_TOKEN') 
+
+              repo_owner = os.environ.get('GITHUB_REPOSITORY', '').split('/')[0]
+              repo_name = os.environ.get('GITHUB_REPOSITORY', '').split('/')[1]
+              
+              issues = []
+              page = 1
+              per_page = 100
+              
+              while True:
+                  try:
+                      response = requests.get(
+                          f"https://api.github.com/repos/{repo_owner}/{repo_name}/issues",
+                          params={
+                              'state': 'all',
+                              'page': page,
+                              'per_page': per_page
+                          },
+                          headers={
+                              "Authorization": f"Bearer {github_token}",
+                              "Content-Type": "application/json"
+                          }
+                      )
+                      
+                      if response.status_code != 200:
+                          print(f"Erro ao buscar issues: {response.status_code}")
+                          break
+                      
+                      page_issues = response.json()
+                      
+                      if not page_issues:
+                          break
+                      
+                      issues.extend([issue for issue in page_issues if 'pull_request' not in issue])
+                      
+                      page += 1
+                      
+                  except Exception as e:
+                      print(f"Erro ao buscar issues da página {page}: {e}")
+                      break
+              
+              print(f"Total de issues encontradas: {len(issues)}")
+              return issues
+          
+          def get_board_fields(issue_node_id):
+              github_token = os.environ.get('GITHUB_TOKEN')
+              if not github_token:
+                  return {"Status": "", "Substatus": ""}
+              
+              query = """
+              query GetIssueProjectFields($nodeId: ID!) {
+                  node(id: $nodeId) {
+                      ... on Issue {
+                          projectItems(first: 100) {
+                              nodes {
+                                  id
+                                  fieldValues(first: 100) {
+                                      nodes {
+                                          ...SelectedStatus
+                                          ...Substatus
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+              
+              fragment SelectedStatus on ProjectV2ItemFieldSingleSelectValue {
+                  name
+                  field {
+                      ... on ProjectV2SingleSelectField {
+                          name
+                      }
+                  }
+              }
+              
+              fragment Substatus on ProjectV2ItemFieldTextValue {
+                  text
+                  field {
+                      ... on ProjectV2Field {
+                          name
+                      }
+                  }
+              }
+              """
+              
+              try:
+                  response = requests.post(
+                      "https://api.github.com/graphql",
+                      json={
+                          "query": query,
+                          "variables": {"nodeId": issue_node_id}
+                      },
+                      headers={
+                          "Authorization": f"Bearer {github_token}",
+                          "Content-Type": "application/json"
+                      }
+                  )
+                  
+                  data = response.json()
+                  
+                  if data.get('errors'):
+                      print(f"Erro na query GraphQL para {issue_node_id}: {data['errors']}")
+                      return {"Status": "", "Substatus": ""}
+                  
+                  project_items = data.get('data', {}).get('node', {}).get('projectItems', {}).get('nodes', [])
+                  status = ""
+                  substatus = ""
+                  
+                  for item in project_items:
+                      for field_value in item.get('fieldValues', {}).get('nodes', []):
+                          field_name = field_value.get('field', {}).get('name', '')
+                          if field_name == "Status":
+                              status = field_value.get('name', '') or field_value.get('text', '')
+                          elif field_name == "Substatus":
+                              substatus = field_value.get('name', '') or field_value.get('text', '')
+                  
+                  return {"Status": status, "Substatus": substatus}
+                  
+              except Exception as e:
+                  print(f"Erro ao buscar dados do board para {issue_node_id}: {e}")
+                  return {"Status": "", "Substatus": ""}
+          
+          def get_first_sheet_name(service, spreadsheet_id):
+              try:
+                  spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+                  sheets = spreadsheet.get('sheets', [])
+                  
+                  if not sheets:
+                      raise Exception("Nenhuma aba encontrada na planilha!")
+                  
+                  first_sheet_name = sheets[0]['properties']['title']
+                  return first_sheet_name
+                  
+              except Exception as e:
+                  print(f"Erro ao obter nome da primeira aba:", e)
+                  raise
+          
+          def update_project_fields_in_sheet(issues_with_project_data):
+              try:
+                  credentials_json = os.environ['GOOGLE_SERVICE_ACCOUNT_CREDENTIALS']
+                  credentials_info = json.loads(credentials_json)
+                  
+                  credentials = service_account.Credentials.from_service_account_info(
+                      credentials_info,
+                      scopes=['https://www.googleapis.com/auth/spreadsheets']
+                  )
+                  
+                  service = build('sheets', 'v4', credentials=credentials)
+                  spreadsheet_id = os.environ['GOOGLE_SPREADSHEET_ID']
+                  
+                  first_sheet_name = get_first_sheet_name(service, spreadsheet_id)
+                  sheet_range = f"'{first_sheet_name}'!A:Z"
+                  
+                  # Buscar dados existentes
+                  result = service.spreadsheets().values().get(
+                      spreadsheetId=spreadsheet_id,
+                      range=sheet_range
+                  ).execute()
+                  
+                  existing_data = result.get('values', [])
+                  
+                  if not existing_data:
+                      print("Planilha vazia - Não há dados para atualizar!")
+                      return
+                  
+                  headers = existing_data[0]
+                  
+                  # Encontrar índices das colunas importantes
+                  try:
+                      url_column_index = headers.index('URL')
+                      status_column_index = headers.index('Status')
+                      substatus_column_index = headers.index('Substatus')
+                  except ValueError as e:
+                      print(f"Colunas necessárias não encontradas:", e)
+                      return
+                  
+                  updates_made = 0
+                  
+                  # Para cada issue com dados do projeto
+                  for issue_data in issues_with_project_data:
+                      issue_url = issue_data['url']
+                      project_fields = issue_data['project_fields']
+                      
+                      # Encontrar a linha correspondente na planilha
+                      row_index = None
+                      for i, row in enumerate(existing_data[1:], start=2):  # Pular cabeçalho
+                          if len(row) > url_column_index and row[url_column_index] == issue_url:
+                              row_index = i
+                              break
+                      
+                      if not row_index:
+                          print(f"Issue não encontrada na planilha: {issue_url}")
+                          continue
+                      
+                      # Verificar se os campos do projeto mudaram
+                      current_row = existing_data[row_index - 1]  # -1 porque existing_data inclui cabeçalho
+                      current_status = current_row[status_column_index] if len(current_row) > status_column_index else ""
+                      current_substatus = current_row[substatus_column_index] if len(current_row) > substatus_column_index else ""
+                      
+                      new_status = project_fields['Status']
+                      new_substatus = project_fields['Substatus']
+                      
+                      if current_status != new_status or current_substatus != new_substatus:
+                          status_range = f"'{first_sheet_name}'!{chr(65 + status_column_index)}{row_index}"
+                          substatus_range = f"'{first_sheet_name}'!{chr(65 + substatus_column_index)}{row_index}"
+                          
+                          service.spreadsheets().values().update(
+                              spreadsheetId=spreadsheet_id,
+                              range=status_range,
+                              valueInputOption='RAW',
+                              body={'values': [[new_status]]}
+                          ).execute()
+                          
+                          service.spreadsheets().values().update(
+                              spreadsheetId=spreadsheet_id,
+                              range=substatus_range,
+                              valueInputOption='RAW',
+                              body={'values': [[new_substatus]]}
+                          ).execute()
+                          
+                          updates_made += 1
+                          print(f"Atualizado: {issue_url} - Status: '{current_status}' -> '{new_status}', Substatus: '{current_substatus}' -> '{new_substatus}'")
+                  
+                  print(f"Total de atualizações realizadas: {updates_made}")
+                  
+              except Exception as e:
+                  print(f"Erro ao atualizar planilha:", e)
+                  raise
+          
+          def main():
+              print(f"Iniciando sincronização!")
+              
+              all_issues = get_all_repository_issues()
+              if not all_issues:
+                  print("Nenhuma issue encontrada!")
+                  return
+              
+              issues_with_project_data = []
+              for issue in all_issues:
+                  project_fields = get_board_fields(issue['node_id'])
+                  
+                  issues_with_project_data.append({
+                      'url': issue['html_url'],
+                      'title': issue['title'],
+                      'project_fields': project_fields
+                  })
+              update_project_fields_in_sheet(issues_with_project_data)
+              
+              print("Sincronização concluída!")
+          
+          main()
+          
+          EOF
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          GOOGLE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS }}
+          GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
