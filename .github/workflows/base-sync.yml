@@ -104,8 +104,8 @@ jobs:
                   
                   return {"Status": status, "Substatus": substatus}
                   
-              except Exception as error:
-                  print("Erro ao buscar dados do board:", error)
+              except Exception as e:
+                  print("Erro ao buscar dados do board:", e)
                   return {"Status": "", "Substatus": ""}
           
           # Processar dados da issue
@@ -147,6 +147,23 @@ jobs:
           from google.oauth2 import service_account
           from googleapiclient.discovery import build
           
+          def get_first_sheet_name(service, spreadsheet_id):
+              try:
+                  spreadsheet = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+                  sheets = spreadsheet.get('sheets', [])
+                  
+                  if not sheets:
+                      raise Exception("Nenhuma aba encontrada na planilha!")
+                  
+                  # Retorna o nome da primeira aba
+                  first_sheet_name = sheets[0]['properties']['title']
+                  print(f"Primeira aba encontrada: {first_sheet_name}")
+                  return first_sheet_name
+                  
+              except Exception as e:
+                  print(f"Erro ao obter nome da primeira aba:", e)
+                  raise
+          
           def add_to_sheet(data):
               try:
                   credentials_json = os.environ['GOOGLE_SERVICE_ACCOUNT_CREDENTIALS']
@@ -160,8 +177,11 @@ jobs:
                   service = build('sheets', 'v4', credentials=credentials)
                   spreadsheet_id = os.environ['GOOGLE_SPREADSHEET_ID']
                   
-                  # Buscar dados existentes na planilha
-                  sheet_range = 'Issues!A:Z'
+                  # Obter o nome da primeira aba
+                  first_sheet_name = get_first_sheet_name(service, spreadsheet_id)
+                  
+                  # Buscar dados existentes na primeira aba
+                  sheet_range = f"'{first_sheet_name}'!A:Z"
                   
                   try:
                       result = service.spreadsheets().values().get(
@@ -172,18 +192,7 @@ jobs:
                       existing_data = result.get('values', [])
                       
                       if not existing_data:
-                          # Se não há dados, adicionar cabeçalho
-                          headers = list(data.keys())
-                          values = [headers, list(data.values())]
-                          
-                          service.spreadsheets().values().update(
-                              spreadsheetId=spreadsheet_id,
-                              range='Issues!A1:Z2',
-                              valueInputOption='RAW',
-                              body={'values': values}
-                          ).execute()
-                          
-                          print("Planilha criada e linha adicionada:", data)
+                          print("Erro: Planilha vazia - Cabeçalho deve estar presente!")
                           return
                       
                       # Buscar linha existente pela URL
@@ -207,7 +216,7 @@ jobs:
                           new_row.append(data.get(header, ''))
                       
                       if existing_row_index:
-                          range_name = f'Issues!A{existing_row_index}:Z{existing_row_index}'
+                          range_name = f"'{first_sheet_name}'!A{existing_row_index}:Z{existing_row_index}"
                           service.spreadsheets().values().update(
                               spreadsheetId=spreadsheet_id,
                               range=range_name,
@@ -217,7 +226,7 @@ jobs:
                           print("Linha atualizada:", data)
                       else:
                           next_row = len(existing_data) + 1
-                          range_name = f'Issues!A{next_row}:Z{next_row}'
+                          range_name = f"'{first_sheet_name}'!A{next_row}:Z{next_row}"
                           service.spreadsheets().values().update(
                               spreadsheetId=spreadsheet_id,
                               range=range_name,
@@ -230,8 +239,8 @@ jobs:
                       print("Erro ao processar planilha:", e)
                       raise
                       
-              except Exception as error:
-                  print("Erro ao adicionar linha:", error)
+              except Exception as e:
+                  print("Erro ao adicionar linha:", e)
                   raise
           
           # Carregar dados processados
