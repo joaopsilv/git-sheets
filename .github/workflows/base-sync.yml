@@ -257,8 +257,7 @@ jobs:
 
           # Salvar resultado para próxima etapa
           with open('sheet_result.json', 'w', encoding='utf-8') as f:
-              json.dump(result, f, ensure_ascii=False, indent=2
-          
+              json.dump(result, f, ensure_ascii=False, indent=2)
           EOF
         env:
           GOOGLE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS }}
