@@ -281,7 +281,7 @@ jobs:
               
               # Dados da issue
               issue_data = json.loads('''${{ toJson(github.event.issue) }}''')
-              current_body = issue_data.get('body', '')
+              current_body = issue_data.get('body', '') or ''
               
               # Construir o link para a linha específica
               spreadsheet_id = sheet_result['spreadsheet_id']
