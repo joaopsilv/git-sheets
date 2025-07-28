@@ -224,6 +224,7 @@ jobs:
                               body={'values': [new_row]}
                           ).execute()
                           print("Linha atualizada:", data)
+                          return None
                       else:
                           next_row = len(existing_data) + 1
                           range_name = f"'{first_sheet_name}'!A{next_row}:Z{next_row}"
@@ -234,6 +235,11 @@ jobs:
                               body={'values': [new_row]}
                           ).execute()
                           print("Linha adicionada:", data)
+                          return {
+                              'row_number': next_row,
+                              'sheet_name': first_sheet_name,
+                              'spreadsheet_id': spreadsheet_id
+                          }
                       
                   except Exception as e:
                       print("Erro ao processar planilha:", e)
@@ -247,13 +253,74 @@ jobs:
           with open('issue_data.json', 'r', encoding='utf-8') as f:
               row_data = json.load(f)
           
-          add_to_sheet(row_data)
+          result = add_to_sheet(row_data)
           
           EOF
         env:
           GOOGLE_SERVICE_ACCOUNT_CREDENTIALS: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_CREDENTIALS }}
           GOOGLE_SPREADSHEET_ID: ${{ secrets.GOOGLE_SPREADSHEET_ID }}
-      
+
+      - name: Update Issue Description
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
+          import requests
+          
+          def update_issue_description():
+              # Verificar se uma nova linha foi criada
+              with open('sheet_result.json', 'r', encoding='utf-8') as f:
+                  sheet_result = json.load(f)
+              
+              if not sheet_result:
+                  print("Nenhuma nova linha criada - pulando atualização da issue")
+                  return
+              
+              # Dados da issue
+              issue_data = json.loads('''${{ toJson(github.event.issue) }}''')
+              current_body = issue_data.get('body', '')
+              
+              # Construir o link para a linha específica
+              spreadsheet_id = sheet_result['spreadsheet_id']
+              sheet_name = sheet_result['sheet_name']
+              row_number = sheet_result['row_number']
+              sheet_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0&range={sheet_name}!A{row_number}:{row_number}"
+              
+              # Adicionar o link no final da descrição
+              new_body = current_body
+              if new_body:
+                  new_body += "\n\n"
+              new_body += f"[Localização](https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit&range={sheet_name}!A{row_number}:{row_number}) na planilha de estimativas"
+              
+              github_token = os.environ.get('GITHUB_TOKEN')
+              if not github_token:
+                  print("GITHUB_TOKEN não configurado")
+                  return
+              
+              repo_full_name = '${{ github.repository }}'
+              issue_number = issue_data['number']
+              
+              update_url = f"https://api.github.com/repos/{repo_full_name}/issues/{issue_number}"
+              
+              response = requests.patch(
+                  update_url,
+                  json={'body': new_body},
+                  headers={
+                      'Authorization': f'Bearer {github_token}',
+                      'Accept': 'application/vnd.github.v3+json'
+                  }
+              )
+              
+              if response.status_code == 200:
+                  print("Descrição da issue atualizada com sucesso!")
+              else:
+                  print(f"Erro ao atualizar issue: {response.status_code} - {response.text}")
+          
+          update_issue_description()
+          EOF
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
       - name: Log Success
         run: |
           echo "Issue sincronizada com sucesso!"
