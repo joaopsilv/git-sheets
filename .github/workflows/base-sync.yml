@@ -287,13 +287,12 @@ jobs:
               spreadsheet_id = sheet_result['spreadsheet_id']
               sheet_name = sheet_result['sheet_name']
               row_number = sheet_result['row_number']
-              sheet_link = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid=0&range={sheet_name}!A{row_number}:{row_number}"
               
               # Adicionar o link no final da descrição
               new_body = current_body
               if new_body:
                   new_body += "\n\n"
-              new_body += f"[Localização](https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit&range={sheet_name}!A{row_number}:{row_number}) na planilha de estimativas"
+              new_body += f"[Localização](https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit?gid=0#gid=0&range=A{row_number}) na planilha de estimativas"
               
               github_token = os.environ.get('GITHUB_TOKEN')
               if not github_token:
