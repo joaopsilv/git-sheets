@@ -254,6 +254,10 @@ jobs:
               row_data = json.load(f)
           
           result = add_to_sheet(row_data)
+
+          # Salvar resultado para próxima etapa
+          with open('sheet_result.json', 'w', encoding='utf-8') as f:
+              json.dump(result, f, ensure_ascii=False, indent=2
           
           EOF
         env:
