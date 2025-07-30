@@ -279,6 +279,10 @@ jobs:
                   print("Nenhuma nova linha criada - pulando atualização da issue")
                   return
               
+              if "Localização" in current_body and "planilha de estimativas" in current_body:
+                  print("Link da planilha já existe na descrição - pulando atualização")
+                  return
+
               # Dados da issue
               issue_data = json.loads('''${{ toJson(github.event.issue) }}''')
               current_body = issue_data.get('body', '') or ''
