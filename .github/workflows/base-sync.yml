@@ -19,8 +19,8 @@ jobs:
         run: |
           pip install google-api-python-client google-auth requests
       
-      - name: Get Board Custom Fields
-        id: get-board-fields
+      - name: Fetch Project Custom Fields
+        id: fetch-project-custom-fields
         run: |
           python3 << 'EOF'
           import requests
@@ -107,12 +107,32 @@ jobs:
               except Exception as e:
                   print("Erro ao buscar dados do board:", e)
                   return {"Status": "", "Substatus": ""}
-          
+
+          project_data = get_board_fields(os.environ.get('ISSUE_NODE_ID', ''))
+
+          # Salvar custom fields
+          with open('project_custom_fields.json', 'w', encoding='utf-8') as f:
+              json.dump(project_data, f, ensure_ascii=False, indent=2)
+          EOF
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+
+      - name: Prepare Sheet Row Data
+        id: prepare-sheet-row-data
+        run: |
+          python3 << 'EOF'
+          import json
+          import os
           from datetime import datetime
           
           def format_date(date_str):
               dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
               return dt.strftime('%d/%m/%Y')
+
+          # Carregar custom fields
+          with open('project_custom_fields.json', 'r', encoding='utf-8') as f:
+              project_data = json.load(f)
 
           issue_data = {
               'node_id': os.environ.get('ISSUE_NODE_ID', ''),
@@ -146,7 +166,6 @@ jobs:
               json.dump(row_data, f, ensure_ascii=False, indent=2)
           EOF
         env:
-          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
           ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
           ISSUE_STATE: ${{ github.event.issue.state }}
@@ -284,9 +303,9 @@ jobs:
       - name: Update Issue Description
         run: |
           python3 << 'EOF'
+          import requests
           import json
           import os
-          import requests
           
           def update_issue_description():
               # Verificar se uma nova linha foi criada
