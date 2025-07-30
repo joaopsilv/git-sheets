@@ -108,16 +108,25 @@ jobs:
                   print("Erro ao buscar dados do board:", e)
                   return {"Status": "", "Substatus": ""}
           
-          # Processar dados da issue
-          issue_data = json.loads('''${{ toJson(github.event.issue) }}''')
-          
-          project_data = get_board_fields(issue_data['node_id'])
-          
           from datetime import datetime
           
           def format_date(date_str):
               dt = datetime.fromisoformat(date_str.replace('Z', '+00:00'))
               return dt.strftime('%d/%m/%Y')
+
+          issue_data = {
+              'node_id': os.environ.get('ISSUE_NODE_ID', ''),
+              'title': os.environ.get('ISSUE_TITLE', ''),
+              'state': os.environ.get('ISSUE_STATE', ''),
+              'html_url': os.environ.get('ISSUE_URL', ''),
+              'created_at': os.environ.get('ISSUE_CREATED_AT', ''),
+              'updated_at': os.environ.get('ISSUE_UPDATED_AT', ''),
+              'assignee': {'login': os.environ.get('ISSUE_ASSIGNEE', '')} if os.environ.get('ISSUE_ASSIGNEE') else None,
+              'body': os.environ.get('ISSUE_BODY', ''),
+              'labels': json.loads(os.environ.get('ISSUE_LABELS', '[]'))
+          }
+
+          project_data = get_board_fields(issue_data['node_id'])
           
           row_data = {
               "Título": issue_data['title'],
@@ -138,6 +147,15 @@ jobs:
           EOF
         env:
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          ISSUE_NODE_ID: ${{ github.event.issue.node_id }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          ISSUE_STATE: ${{ github.event.issue.state }}
+          ISSUE_URL: ${{ github.event.issue.html_url }}
+          ISSUE_CREATED_AT: ${{ github.event.issue.created_at }}
+          ISSUE_UPDATED_AT: ${{ github.event.issue.updated_at }}
+          ISSUE_ASSIGNEE: ${{ github.event.issue.assignee.login }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_LABELS: ${{ toJson(github.event.issue.labels) }}
       
       - name: Update Google Sheets
         run: |
@@ -279,9 +297,7 @@ jobs:
                   print("Nenhuma nova linha criada - pulando atualização da issue")
                   return
 
-              # Dados da issue
-              issue_data = json.loads('''${{ toJson(github.event.issue) }}''')
-              current_body = issue_data.get('body', '') or ''
+              current_body = os.environ.get('ISSUE_BODY', '') or ''
 
               if "Localização" in current_body and "planilha de estimativas" in current_body:
                   print("Link da planilha já existe na descrição - pulando atualização")
@@ -304,7 +320,7 @@ jobs:
                   return
               
               repo_full_name = '${{ github.repository }}'
-              issue_number = issue_data['number']
+              issue_number = os.environ.get('ISSUE_NUMBER')
               
               update_url = f"https://api.github.com/repos/{repo_full_name}/issues/{issue_number}"
               
@@ -326,6 +342,8 @@ jobs:
           EOF
         env:
           GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
 
       - name: Log Success
         run: |
