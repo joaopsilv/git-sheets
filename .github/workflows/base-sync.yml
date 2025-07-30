@@ -145,8 +145,6 @@ jobs:
               'body': os.environ.get('ISSUE_BODY', ''),
               'labels': json.loads(os.environ.get('ISSUE_LABELS', '[]'))
           }
-
-          project_data = get_board_fields(issue_data['node_id'])
           
           row_data = {
               "Título": issue_data['title'],
