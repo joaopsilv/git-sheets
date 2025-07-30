@@ -1,7 +1,7 @@
 name: Sync Project Fields to Google Sheets
 on:
   schedule:
-    - cron: '55 10 * * *'
+    - cron: '55 13 * * *' # Para rodar às 10h55 (UTC-3h, referente ao fuso de Brasília)
   workflow_dispatch:  # Permite execução manual
 
 jobs:
